@@ -125,7 +125,6 @@ export function useSessionManager(
       wsClientRef.current = null;
       setWsClient(null);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.isAuthenticated, auth.token]);
 
   function handleMessage(msg: ServerMessage): void {

@@ -102,6 +102,7 @@ export function ansiToHtml(raw: string, maxLines = 30): string {
   const lines: string[][] = [[]]; // array of lines, each line is array of HTML fragments
 
   // Regex for all CSI sequences including DEC private mode (\x1b[?...)
+  // eslint-disable-next-line no-control-regex
   const csiRegex = /\x1b\[([?!>]?[\d;]*?)([A-Za-z])/g;
   // Also match OSC, other escapes, and control chars between CSI sequences
   let lastIdx = 0;
@@ -133,7 +134,7 @@ export function ansiToHtml(raw: string, maxLines = 30): string {
   }
 
   // Take last N lines, trim trailing empty lines
-  let result = lines.map((frags) => frags.join('')).slice(-maxLines);
+  const result = lines.map((frags) => frags.join('')).slice(-maxLines);
   while (result.length > 0 && result[result.length - 1].trim() === '') {
     result.pop();
   }
@@ -143,10 +144,12 @@ export function ansiToHtml(raw: string, maxLines = 30): string {
 
 function processText(text: string, style: Style, lines: string[][]): void {
   // Strip remaining escape sequences and control chars
+  /* eslint-disable no-control-regex */
   const clean = text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
     .replace(/\x1b[^\x5b\x5d]/g, '') // other 2-byte escapes
     .replace(/[\x00-\x08\x0b\x0e-\x1f\x7f]/g, ''); // control chars except \n \r \t
+  /* eslint-enable no-control-regex */
 
   let i = 0;
   while (i < clean.length) {

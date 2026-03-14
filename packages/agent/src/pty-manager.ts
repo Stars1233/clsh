@@ -69,6 +69,7 @@ export interface PTYManagerOptions {
  * OSC 7 format: \x1b]7;file:///path\x07 or \x1b]7;file:///path\x1b\\
  */
 function parseOSC7(data: string): string | null {
+  // eslint-disable-next-line no-control-regex
   const match = /\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)(?:\x07|\x1b\\)/.exec(data);
   if (!match) return null;
   try {
@@ -222,7 +223,7 @@ export class PTYManager {
         '-L', TMUX_SOCKET,
         '-f', this.tmuxConfPath,
         'new-session', '-A',
-        '-s', tmuxName!,
+        '-s', tmuxName as string,
         '-x', String(cols),
         '-y', String(rows),
         innerCmd, ...innerArgs,
