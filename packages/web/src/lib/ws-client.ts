@@ -16,18 +16,25 @@ export interface WSClientOptions {
   onUnauthorized?: () => void;
 }
 
+/** Interval between application-level ping messages (ms). */
+const PING_INTERVAL = 25_000;
+
+/** Max backoff delay for reconnection (ms). */
+const MAX_BACKOFF = 30_000;
+
 /**
- * WebSocket client with exponential backoff reconnection.
+ * WebSocket client with persistent reconnection.
  *
  * Handles JSON serialization of the clsh protocol messages,
- * automatic reconnection on disconnect, and connection timeout
- * detection for demo mode fallback.
+ * automatic reconnection on disconnect (no hard cap — keeps trying
+ * with exponential backoff), periodic heartbeat pings, and
+ * visibility/network-aware wake-up reconnection.
  */
 export class TerminalWSClient {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private maxReconnects = 5;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
 
   private readonly options: WSClientOptions;
@@ -37,6 +44,10 @@ export class TerminalWSClient {
   private get token() { return this.options.token; }
   private get onMessage() { return this.options.onMessage; }
   private get onStatusChange() { return this.options.onStatusChange; }
+
+  // Bound handlers for add/removeEventListener
+  private readonly handleVisibility = () => this.onVisibilityChange();
+  private readonly handleOnline = () => this.forceReconnect();
 
   constructor(options: WSClientOptions) {
     this.options = options;
@@ -78,6 +89,8 @@ export class TerminalWSClient {
         clearTimeout(timeout);
         this.reconnectAttempts = 0;
         this.onStatusChange('connected');
+        this.startPing();
+        this.addLifecycleListeners();
         resolve(true);
       };
 
@@ -92,11 +105,13 @@ export class TerminalWSClient {
 
       this.ws.onclose = (event: CloseEvent) => {
         clearTimeout(timeout);
+        this.stopPing();
         this.onStatusChange('disconnected');
         // 4001 = backend rejected token (expired JWT or backend restarted).
         // Stop reconnecting — the stored token is no longer valid.
         if (event.code === 4001) {
           this.disposed = true;
+          this.removeLifecycleListeners();
           this.options.onUnauthorized?.();
           return;
         }
@@ -125,7 +140,8 @@ export class TerminalWSClient {
    */
   disconnect(): void {
     this.disposed = true;
-    this.maxReconnects = 0;
+    this.stopPing();
+    this.removeLifecycleListeners();
 
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
@@ -144,14 +160,80 @@ export class TerminalWSClient {
     this.onStatusChange('disconnected');
   }
 
-  private scheduleReconnect(): void {
-    if (this.disposed || this.reconnectAttempts >= this.maxReconnects) {
-      return;
+  /**
+   * Force an immediate reconnection attempt.
+   * Resets the backoff counter so the first attempt is instant.
+   * Used by visibility-change and online-event handlers.
+   */
+  forceReconnect(): void {
+    if (this.disposed) return;
+    // Already connected — nothing to do
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+
+    // Cancel any pending scheduled reconnect
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
+
+    // Reset backoff and try immediately
+    this.reconnectAttempts = 0;
+    this.onStatusChange('reconnecting');
+    void this.connect();
+  }
+
+  // --------------- Heartbeat ---------------
+
+  private startPing(): void {
+    this.stopPing();
+    this.pingTimer = setInterval(() => {
+      this.send({ type: 'ping' });
+    }, PING_INTERVAL);
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  // --------------- Lifecycle listeners ---------------
+
+  private addLifecycleListeners(): void {
+    document.addEventListener('visibilitychange', this.handleVisibility);
+    window.addEventListener('online', this.handleOnline);
+  }
+
+  private removeLifecycleListeners(): void {
+    document.removeEventListener('visibilitychange', this.handleVisibility);
+    window.removeEventListener('online', this.handleOnline);
+  }
+
+  private onVisibilityChange(): void {
+    if (document.visibilityState !== 'visible') return;
+    // Page became visible — check if connection is still alive
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      this.forceReconnect();
+    } else {
+      // Connection looks open, send a ping to verify it's alive.
+      // If the connection is actually dead the send will fail and
+      // onclose will fire, triggering reconnection.
+      this.send({ type: 'ping' });
+    }
+  }
+
+  // --------------- Reconnection ---------------
+
+  private scheduleReconnect(): void {
+    if (this.disposed) return;
+
+    // Already have a pending reconnect scheduled
+    if (this.reconnectTimer !== null) return;
 
     this.onStatusChange('reconnecting');
 
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), MAX_BACKOFF);
     this.reconnectAttempts++;
 
     this.reconnectTimer = setTimeout(() => {

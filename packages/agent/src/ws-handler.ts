@@ -79,6 +79,8 @@ async function handleConnection(
   }
 
   // Authentication succeeded -- set up message handling
+  (ws as unknown as { isAlive: boolean }).isAlive = true;
+  ws.on('pong', () => { (ws as unknown as { isAlive: boolean }).isAlive = true; });
   subscriptions.set(ws, new Set());
 
   ws.on('message', (rawData: Buffer | string) => {

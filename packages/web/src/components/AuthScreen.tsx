@@ -47,9 +47,9 @@ export function AuthScreen({ auth, onBootstrapSubmit }: AuthScreenProps) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-clsh-bg overflow-hidden">
-      {/* Centered form area — pushes up when keyboard is open */}
-      <div className="flex flex-1 items-center justify-center px-4">
+    <div className="relative h-full bg-clsh-bg overflow-hidden">
+      {/* Centered form area — stays in place when keyboard opens */}
+      <div className="flex h-full items-center justify-center px-4">
         <div className="w-full max-w-sm">
           {/* Branding */}
           <div className="mb-8 text-center">
@@ -71,9 +71,12 @@ export function AuthScreen({ auth, onBootstrapSubmit }: AuthScreenProps) {
                 Bootstrap Token
               </label>
               <div className="relative flex items-center">
-                {/* On mobile: non-interactive display (no focus = no iOS keyboard = no zoom) */}
+                {/* On mobile: tap to show keyboard (no native iOS keyboard, no zoom) */}
                 {isMobile ? (
-                  <div className="w-full rounded-md border border-clsh-border bg-clsh-surface px-3 py-2.5 pr-20 text-sm text-white min-h-[42px] flex items-center overflow-hidden whitespace-nowrap">
+                  <div
+                    className="w-full rounded-md border border-clsh-border bg-clsh-surface px-3 py-2.5 pr-20 text-sm text-white min-h-[42px] flex items-center overflow-hidden whitespace-nowrap cursor-text"
+                    onClick={() => setShowKeyboard(true)}
+                  >
                     {bootstrapToken || (
                       <span className="text-xs text-neutral-600">Paste token from terminal...</span>
                     )}
@@ -97,13 +100,10 @@ export function AuthScreen({ auth, onBootstrapSubmit }: AuthScreenProps) {
                     type="button"
                     onClick={() => void handlePaste()}
                     disabled={auth.loading}
-                    className="rounded p-1.5 text-neutral-500 transition-colors hover:text-clsh-orange active:text-clsh-orange disabled:opacity-50"
+                    className="rounded px-2 py-1 text-xs font-medium text-neutral-500 transition-colors hover:text-clsh-orange active:text-clsh-orange disabled:opacity-50"
                     title="Paste from clipboard"
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
+                    Paste
                   </button>
                   {isMobile && (
                     <button
@@ -144,9 +144,9 @@ export function AuthScreen({ auth, onBootstrapSubmit }: AuthScreenProps) {
         </div>
       </div>
 
-      {/* iOS keyboard fixed at bottom */}
+      {/* iOS keyboard overlaid at bottom — does not shift content */}
       {isMobile && showKeyboard && (
-        <div className="shrink-0">
+        <div className="absolute bottom-0 left-0 right-0">
           <IOSKeyboard
             onKey={handleAuthKey}
             skin="ios-terminal"

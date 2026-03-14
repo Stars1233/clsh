@@ -77,8 +77,23 @@ export function createAppServer(
   // Create HTTP server
   const httpServer = createServer(app);
 
-  // Create WebSocket server (handle upgrade manually for auth)
+  // Create WebSocket server with native ping to detect dead connections.
+  // Clients that don't respond to a ping within 30s are terminated.
   const wss = new WebSocketServer({ server: httpServer });
+
+  const WS_PING_INTERVAL = 30_000;
+  const pingInterval = setInterval(() => {
+    for (const ws of wss.clients) {
+      if ((ws as unknown as { isAlive?: boolean }).isAlive === false) {
+        ws.terminate();
+        continue;
+      }
+      (ws as unknown as { isAlive: boolean }).isAlive = false;
+      ws.ping();
+    }
+  }, WS_PING_INTERVAL);
+
+  wss.on('close', () => clearInterval(pingInterval));
 
   return { app, httpServer, wss };
 }
