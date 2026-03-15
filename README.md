@@ -179,6 +179,30 @@ CLSH_NO_TMUX=1 npm run dev
 
 **How it works under the hood:** clsh uses tmux control mode (`-CC`) instead of normal tmux attachment. Control mode sends raw terminal output as structured notifications (`%output`) instead of screen redraws, which means xterm.js gets the original byte stream and scrollback works perfectly. User input is forwarded via `send-keys -H` (hex-encoded). On server restart, `capture-pane` recovers the existing scrollback and control mode resumes live streaming.
 
+## Lid-Close Mode (optional)
+
+By default, macOS powers down Wi-Fi about 30 seconds after you close the lid, even if the CPU is still running. This kills the tunnel and your phone loses connection.
+
+If you want clsh to stay reachable with the lid closed (while plugged in), run this once:
+
+```bash
+sudo pmset -c tcpkeepalive 1
+```
+
+This tells macOS to keep network connections alive during display sleep on AC power. It persists across reboots. clsh will print a reminder on startup if this isn't configured.
+
+**What it does:** Keeps Wi-Fi and TCP connections alive when the lid is closed and the Mac is charging. Your phone stays connected to clsh without interruption.
+
+**What it doesn't do:** This has no effect on battery. When unplugged with the lid closed, macOS forces full sleep regardless. There's no software workaround for that.
+
+**To undo:**
+
+```bash
+sudo pmset -c tcpkeepalive 0
+```
+
+> **Note:** Even without this setting, clsh auto-recovers when you open the lid. The tunnel recreates itself and your phone reconnects automatically.
+
 ## Add to Home Screen
 
 With a permanent ngrok URL, add clsh as a PWA:
