@@ -30,14 +30,15 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "turbo run dev --filter=@clsh/agent --filter=@clsh/web --parallel --log-prefix=none --log-order=stream --verbosity=0",
+    "dev": "trap 'kill 0' EXIT; : ${PORT:=4030}; AGENT_PORT=$PORT npm run dev --workspace=@clsh/web -- --port $((PORT+1)) &>/dev/null & WEB_PORT=$((PORT+1)) npm run dev --workspace=@clsh/agent",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "postinstall": "node scripts/fix-node-pty.js"
+    "postinstall": "node scripts/fix-node-pty.js",
+    "prepare": "cp scripts/pre-commit .git/hooks/pre-commit 2>/dev/null || true"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

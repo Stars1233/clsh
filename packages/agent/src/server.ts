@@ -1,16 +1,18 @@
 import express, { type Express } from 'express';
 import { createServer as createNetServer } from 'node:net';
-import { createServer, type Server as HttpServer } from 'node:http';
+import { createServer, type Server as HttpServer, type IncomingMessage } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { networkInterfaces } from 'node:os';
+import rateLimit from 'express-rate-limit';
 import {
   generateBootstrapToken,
   verifyBootstrapToken,
   createSessionJWT,
+  hashToken,
 } from './auth.js';
-import { createSSERouter } from './sse-handler.js';
 import type { DbStatements } from './db.js';
 import type { AgentConfig } from './config.js';
 
@@ -18,6 +20,58 @@ export interface ServerContext {
   app: Express;
   httpServer: HttpServer;
   wss: WebSocketServer;
+}
+
+/**
+ * Set of allowed origins for CORS and WebSocket origin checks.
+ * Populated at startup and updated when tunnel URLs change.
+ */
+const allowedOrigins = new Set<string>();
+
+/**
+ * Returns the first non-internal IPv4 address (e.g. 192.168.x.x).
+ */
+function getLocalIP(): string | null {
+  const nets = networkInterfaces();
+  for (const interfaces of Object.values(nets)) {
+    if (!interfaces) continue;
+    for (const iface of interfaces) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Updates the set of allowed origins based on the current server port and tunnel URL.
+ * Called at startup and whenever the tunnel is recreated.
+ */
+export function updateAllowedOrigins(port: number, tunnelUrl?: string, webPort?: number): void {
+  allowedOrigins.clear();
+
+  // All ports that serve the app (agent + vite dev server if different)
+  const ports = new Set([port]);
+  if (webPort && webPort !== port) ports.add(webPort);
+
+  // Hosts: localhost, loopback, and local network IP (phones on same Wi-Fi)
+  const hosts = ['localhost', '127.0.0.1'];
+  const localIP = getLocalIP();
+  if (localIP) hosts.push(localIP);
+
+  for (const host of hosts) {
+    for (const p of ports) {
+      allowedOrigins.add(`http://${host}:${p}`);
+    }
+  }
+
+  if (tunnelUrl) {
+    try {
+      const url = new URL(tunnelUrl);
+      allowedOrigins.add(url.origin);
+    } catch { /* invalid URL — skip */ }
+  }
 }
 
 /**
@@ -57,30 +111,43 @@ export function createAppServer(
 ): ServerContext {
   const app = express();
 
-  // Middleware — CORS for development
+  // Trust the first proxy (ngrok/SSH tunnel) so express-rate-limit
+  // reads the real client IP from X-Forwarded-For
+  app.set('trust proxy', 1);
+
+  // Security headers
   app.use((_req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    res.header('X-Frame-Options', 'DENY');
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.header('Content-Security-Policy', "default-src 'self'; connect-src 'self' wss: ws:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:");
+    next();
+  });
+
+  // Middleware — dynamic CORS (restricted to allowed origins)
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.has(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Vary', 'Origin');
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (_req.method === 'OPTIONS') {
+    if (req.method === 'OPTIONS') {
       res.sendStatus(204);
       return;
     }
     next();
   });
-  app.use(express.json());
+  app.use(express.json({ limit: '16kb' }));
 
   // Health check
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Auth routes
+  // Auth routes (rate-limited)
   mountAuthRoutes(app, config, statements);
-
-  // SSE routes
-  const sseRouter = createSSERouter();
-  app.use('/api/sse', sseRouter);
 
   // Static file serving (web dist)
   const webDistPath = findWebDist();
@@ -106,7 +173,18 @@ export function createAppServer(
 
   // Create WebSocket server with native ping to detect dead connections.
   // Clients that don't respond to a ping within 30s are terminated.
-  const wss = new WebSocketServer({ server: httpServer });
+  const wss = new WebSocketServer({
+    server: httpServer,
+    maxPayload: 64 * 1024, // 64 KB max message size (H3)
+    verifyClient: (info: { origin: string; secure: boolean; req: IncomingMessage }) => {
+      const origin = info.origin;
+      // Allow connections with no origin header (non-browser clients, CLIs)
+      if (!origin) return true;
+      if (allowedOrigins.has(origin)) return true;
+      console.warn(`  WS rejected: origin "${origin}" not in [${[...allowedOrigins].join(', ')}]`);
+      return false;
+    },
+  });
 
   const WS_PING_INTERVAL = 30_000;
   const pingInterval = setInterval(() => {
@@ -130,8 +208,17 @@ function mountAuthRoutes(
   config: AgentConfig,
   statements: DbStatements,
 ): void {
+  // Rate limit auth endpoint (H2): 10 requests per 15 minutes
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many authentication attempts, please try again later' },
+  });
+
   // POST /api/auth/bootstrap — exchange a bootstrap token for a JWT
-  app.post('/api/auth/bootstrap', async (req, res) => {
+  app.post('/api/auth/bootstrap', authLimiter, async (req, res) => {
     try {
       const { token } = req.body as { token?: string };
 
@@ -145,6 +232,9 @@ function mountAuthRoutes(
         res.status(401).json({ error: 'Invalid or expired bootstrap token' });
         return;
       }
+
+      // Consume the token immediately — one-time use only
+      statements.deleteBootstrapToken.run(hashToken(token));
 
       const jwt = await createSessionJWT(
         { authMethod: 'bootstrap' },
