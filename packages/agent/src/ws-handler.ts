@@ -25,7 +25,7 @@ function sendError(ws: WebSocket, message: string): void {
 }
 
 function isValidShell(shell: unknown): shell is ShellType {
-  return shell === 'zsh' || shell === 'tmux' || shell === 'claude';
+  return shell === 'bash' || shell === 'zsh' || shell === 'tmux' || shell === 'claude';
 }
 
 function parseClientMessage(raw: string): ClientMessage | null {
@@ -182,12 +182,13 @@ function handleMessage(
 
 function handleSessionCreate(
   ws: WebSocket,
-  shell: ShellType | unknown,
+  shell: ShellType | undefined | unknown,
   name: string | undefined,
   ptyManager: PTYManager,
   subscriptions: SubscriptionMap,
 ): void {
-  if (!isValidShell(shell)) {
+  // If shell is provided, validate it; if omitted, PTYManager uses its defaultShell
+  if (shell !== undefined && !isValidShell(shell)) {
     sendError(ws, `Invalid shell type: ${String(shell)}`);
     return;
   }
@@ -211,7 +212,7 @@ function handleSessionCreate(
   send(ws, {
     type: 'session',
     sessionId: session.id,
-    shell,
+    shell: session.shell,
     pid: session.pty.pid,
     name: session.name,
     cwd: session.cwd,
